@@ -18,7 +18,7 @@
    [metabase.driver.starrocks.compat :as compat]
    [metabase.util.log :as log])
   (:import
-   (java.sql Connection ResultSet ResultSetMetaData)))
+   (java.sql Connection ResultSet ResultSetMetaData Types)))
 
 (set! *warn-on-reflection* true)
 
@@ -147,22 +147,36 @@
   [_ field-type]
   (starrocks-type->base-type field-type))
 
+(defn- boolean-column? [^ResultSetMetaData rsmeta i]
+  ;; MariaDB JDBC versions disagree on numeric precision, but preserve the wire display width.
+  (and (= Types/TINYINT (.getColumnType rsmeta i))
+       (= 1 (.getColumnDisplaySize rsmeta i))))
+
 (defmethod sql-jdbc.execute/column-metadata :starrocks
   [driver ^ResultSetMetaData rsmeta]
   ;; StarRocks BOOLEAN is stored as TINYINT(1) and reported as plain TINYINT over the MySQL
   ;; wire protocol, while table sync reads it as `boolean` from DESCRIBE. Left alone, result
   ;; columns come back as :type/Integer where the synced table says :type/Boolean, which
   ;; breaks anything comparing the two - most visibly data sandboxing, whose column type
-  ;; check rejects every query against a sandboxed table. Real TINYINT columns report
-  ;; precision 4 and are left untouched.
+  ;; check rejects every query against a sandboxed table. Real TINYINT columns have a wider
+  ;; display width and are left untouched.
   (let [cols ((get-method sql-jdbc.execute/column-metadata :sql-jdbc) driver rsmeta)]
     (into []
           (map-indexed (fn [i col]
-                         (if (and (= "TINYINT" (:database_type col))
-                                  (= 1 (.getPrecision rsmeta (inc i))))
+                         (if (boolean-column? rsmeta (inc i))
                            (assoc col :base_type :type/Boolean, :database_type "BOOLEAN")
                            col)))
           cols)))
+
+(defmethod sql-jdbc.execute/read-column-thunk [:starrocks Types/TINYINT]
+  [driver ^ResultSet rs rsmeta i]
+  (if (boolean-column? rsmeta i)
+    (fn []
+      (let [value (.getBoolean rs (int i))]
+        (when-not (.wasNull rs)
+          value)))
+    ((get-method sql-jdbc.execute/read-column-thunk [:sql-jdbc Types/TINYINT])
+     driver rs rsmeta i)))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                          Metadata / Sync                                                        |

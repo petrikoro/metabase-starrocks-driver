@@ -19,6 +19,15 @@
   [{:name "bool_col"    :database_type "TINYINT" :base_type :type/Integer}
    {:name "tinyint_col" :database_type "TINYINT" :base_type :type/Integer}])
 
+;; Stable since 0.35; StarRocks overrides only TINYINT and delegates ordinary integer reads.
+(defmulti read-column-thunk
+  (fn [driver _rs ^java.sql.ResultSetMetaData rsmeta i]
+    [driver (.getColumnType rsmeta i)]))
+
+(defmethod read-column-thunk :default
+  [_driver ^java.sql.ResultSet rs _rsmeta i]
+  (fn [] (.getObject rs (int i))))
+
 (defn do-with-connection-with-options
   "Stub that genuinely invokes `f`, so the driver's describe-* bodies are actually executed.
    An earlier version returned nil without calling `f`, which left `describe-database-impl`
