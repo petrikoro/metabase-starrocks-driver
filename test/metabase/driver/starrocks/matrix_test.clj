@@ -21,6 +21,9 @@
     metabase.driver/describe-fks
     metabase.driver/describe-database*
     metabase.driver/describe-database
+    metabase.driver/allowed-promotions
+    metabase.driver/alter-columns!
+    metabase.driver/alter-table-columns!
     metabase.driver.sql.query-processor/transform-literal-like-pattern-honeysql])
 
 (def ^:private marker "#RESULT#")
@@ -58,7 +61,38 @@
          :calls
          ;; Exercises the real call shapes. Nothing else in the suite reaches these: FK sync is
          ;; gated off by `:metadata/key-constraints false`, so a wrong arity would ship silently.
-         {:describe-fks-trailing-map
+         {:upload-types
+          (mapv (fn [type#]
+                  (call# 'metabase.driver/upload-type->database-type [:starrocks type#]))
+                [:metabase.upload/varchar-255 :metabase.upload/text :metabase.upload/int
+                 :metabase.upload/float :metabase.upload/boolean :metabase.upload/date
+                 :metabase.upload/datetime :metabase.upload/auto-incrementing-int-pk])
+
+          :uploads-supported
+          (mapv (fn [catalog#]
+                  (call# 'metabase.driver/database-supports?
+                         [:starrocks :uploads {:details {:catalog catalog#}}]))
+                [nil "" "default_catalog" " default_catalog " "hive"])
+
+          :column-limit
+          (call# 'metabase.driver/column-name-length-limit [:starrocks])
+
+          :allowed-promotions
+          (call# 'metabase.driver/allowed-promotions [:starrocks])
+
+          :add-columns
+          (mapv (fn [opts#]
+                  (call# 'metabase.driver/add-columns!
+                         (into [:starrocks 1 "s.t" {:extra [:string]}] opts#)))
+                [[] [:primary-key [:_mb_row_id]]])
+
+          :alter-columns
+          (let [mm# (if (probe# 'metabase.driver/alter-table-columns!)
+                      'metabase.driver/alter-table-columns!
+                      'metabase.driver/alter-columns!)]
+            (call# mm# [:starrocks 1 "s.t" {:n [:double]}]))
+
+          :describe-fks-trailing-map
           (call# 'metabase.driver/describe-fks
                  [:starrocks db# {:schema-names ["s"] :table-names ["t"]}])
 
@@ -73,15 +107,32 @@
           (call# 'metabase.driver/describe-table-fks
                  [:starrocks db# {:name "t" :schema "s"}])
 
-          ;; Upstream v1.0.6 added a result-column metadata correction. Keep behavioural coverage
-          ;; while compiling it against every Metabase shape: precision-1 TINYINT is StarRocks
-          ;; BOOLEAN, while a real TINYINT (precision 4) must remain an integer.
+          ;; Display width 1 identifies StarRocks BOOLEAN even with JDBC 2.7's precision 0.
+          ;; Real TINYINT has width 4 and must retain its integer metadata and values.
           :column-metadata
           (call# 'metabase.driver.sql-jdbc.execute/column-metadata
                  [:starrocks
                   (reify java.sql.ResultSetMetaData
-                    (getPrecision [_# i#]
+                    (getColumnType [_# _i#] java.sql.Types/TINYINT)
+                    (getColumnDisplaySize [_# i#]
                       (case i# 1 1 2 4)))])}
+
+         :tinyint-values
+         (mapv (fn [[width# value#]]
+                 (let [rs# (reify java.sql.ResultSet
+                             (^boolean getBoolean [_# ^int _i#]
+                               (boolean (and (some? value#) (not (zero? value#)))))
+                             (^Object getObject [_# ^int _i#] value#)
+                             (wasNull [_#] (nil? value#)))
+                       md# (reify java.sql.ResultSetMetaData
+                             (getColumnType [_# _i#] java.sql.Types/TINYINT)
+                             (getColumnDisplaySize [_# _i#] width#))
+                       result# (call# 'metabase.driver.sql-jdbc.execute/read-column-thunk
+                                      [:starrocks rs# md# 1])]
+                   (if-let [reader# (:ok result#)]
+                     {:ok (reader#)}
+                     result#)))
+               [[1 1] [1 0] [1 nil] [4 -128] [4 127] [4 nil]])
 
          ;; Behavioural coverage of `describe-database-impl`, which the matrix rewired from a
          ;; literal defmethod. The stub connection answers the driver's real SHOW statements, so
@@ -108,7 +159,7 @@
   (let [cp     (str (System/getProperty "java.class.path")
                     java.io.File/pathSeparator
                     (.getPath (io/file (tc/repo-root) "test" "stubs" shape)))
-        {:keys [exit out err]} (shell/sh "java" "-cp" cp "clojure.main" "-e" (pr-str probe-form)
+        {:keys [exit out err]} (shell/sh "java" "-cp" cp "clojure.main" "-e" (binding [*print-meta* true] (pr-str probe-form))
                                          :dir (tc/repo-root))]
     {:exit   exit
      :err    err
@@ -121,22 +172,35 @@
 
 (def ^:private shapes
   "Expected registrations per Metabase shape. `describe-fks` is present in all of them (0.49+)."
-  {"v50" {:desc       "Metabase 0.50 - 0.56"
+  {"v50" {:desc       "Metabase 0.50.0 - 0.50.7"
           :registered '#{metabase.driver/describe-table-fks
                          metabase.driver/describe-fks
-                         metabase.driver/describe-database}}
+                         metabase.driver/describe-database
+                         metabase.driver/alter-columns!}}
+   "v54" {:desc       "Metabase 0.54 - 0.56"
+          :registered '#{metabase.driver/describe-table-fks
+                         metabase.driver/describe-fks
+                         metabase.driver/describe-database
+                         metabase.driver/allowed-promotions
+                         metabase.driver/alter-table-columns!}}
    "v57" {:desc       "Metabase 0.57 - 0.58"
           :registered '#{metabase.driver/describe-table-fks
                          metabase.driver/describe-fks
-                         metabase.driver/describe-database*}}
+                         metabase.driver/describe-database*
+                         metabase.driver/allowed-promotions
+                         metabase.driver/alter-table-columns!}}
    "v59" {:desc       "Metabase 0.59 - 0.62"
           :registered '#{metabase.driver/describe-table-fks
                          metabase.driver/describe-fks
                          metabase.driver/describe-database*
+                         metabase.driver/allowed-promotions
+                         metabase.driver/alter-table-columns!
                          metabase.driver.sql.query-processor/transform-literal-like-pattern-honeysql}}
    "v63" {:desc       "Metabase 0.63+"
           :registered '#{metabase.driver/describe-fks
                          metabase.driver/describe-database*
+                         metabase.driver/allowed-promotions
+                         metabase.driver/alter-table-columns!
                          metabase.driver.sql.query-processor/transform-literal-like-pattern-honeysql}}})
 
 (defn- probe!
@@ -157,6 +221,22 @@
   (doseq [[shape {:keys [desc]}] (sort shapes)]
     (testing (str shape " (" desc ")")
       (probe! shape))))
+
+(deftest uploads-contract-across-versions
+  (doseq [shape (keys shapes)]
+    (testing shape
+      (let [calls (:calls (probe! shape))]
+        (is (= (mapv #(hash-map :ok %)
+                     [[:string] [:string] [:bigint] [:double]
+                      [:boolean] [:date] [:datetime] [:bigint :not-null :auto-increment]])
+               (:upload-types calls)))
+        (is (= (mapv #(hash-map :ok %) [true true true true false])
+               (:uploads-supported calls)))
+        (is (= (if (= shape "v50") :absent {:ok 255}) (:column-limit calls)))
+        (is (= (if (= shape "v50") :absent {:ok {}}) (:allowed-promotions calls)))
+        (doseq [result (:add-columns calls)]
+          (is (str/includes? (:err result "") "Adding CSV columns")))
+        (is (str/includes? (get-in calls [:alter-columns :err] "") "Adding CSV columns"))))))
 
 (deftest registers-exactly-the-right-methods-per-shape
   (doseq [[shape {:keys [desc registered]}] (sort shapes)]
@@ -215,7 +295,10 @@
                     :database_type "TINYINT"
                     :base_type     :type/Integer}]}
              (get-in (probe! shape) [:calls :column-metadata]))
-          "precision-1 TINYINT should be Boolean without changing real TINYINT columns"))))
+          "width-1 TINYINT should be Boolean without changing real TINYINT columns")
+      (is (= (mapv #(hash-map :ok %) [true false nil -128 127 nil])
+             (:tinyint-values (probe! shape)))
+          "values must match metadata, including false, NULL, and real TINYINT limits"))))
 
 (deftest median-and-percentile-use-starrocks-syntax
   (doseq [[shape {:keys [desc]}] (sort shapes)]

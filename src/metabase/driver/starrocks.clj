@@ -16,9 +16,10 @@
    [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
    [metabase.driver.sql.query-processor :as sql.qp]
    [metabase.driver.starrocks.compat :as compat]
+   [metabase.driver.starrocks.uploads :as uploads]
    [metabase.util.log :as log])
   (:import
-   (java.sql Connection ResultSet ResultSetMetaData)))
+   (java.sql Connection ResultSet ResultSetMetaData Types)))
 
 (set! *warn-on-reflection* true)
 
@@ -47,6 +48,40 @@
                               :date-arithmetics                true
                               :advanced-math-expressions       true}]
   (defmethod driver/database-supports? [:starrocks feature] [_ _ _] supported?))
+
+(defmethod driver/database-supports? [:starrocks :uploads]
+  [_ _ database]
+  (uploads/supported? database))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                          CSV uploads                                                            |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; Keep Metabase's default :upload-with-auto-pk true and create-auto-pk-with-append-csv? false;
+;; existing tables never need an AUTO_INCREMENT ALTER.
+(defmethod driver/upload-type->database-type :starrocks [_ upload-type]
+  (uploads/database-type upload-type))
+
+(defmethod driver/table-name-length-limit :starrocks [_]
+  uploads/identifier-limit)
+
+(defmethod driver/create-table! :starrocks
+  [driver db-id table-name column-definitions & {:keys [primary-key]}]
+  (uploads/create-table! driver db-id table-name column-definitions primary-key))
+
+;; New columns bypass allowed-promotions and can start an asynchronous ALTER.
+(defmethod driver/add-columns! :starrocks
+  [_driver _db-id _table-name _column-definitions & _]
+  (uploads/reject-schema-change!))
+
+(defmethod driver/insert-into! :starrocks [driver db-id table-name column-names values]
+  (uploads/insert-into! driver db-id table-name column-names values driver/*insert-chunk-rows*))
+
+(defmethod driver/truncate! :starrocks [driver db-id table-name]
+  (uploads/truncate! driver db-id table-name))
+
+(defmethod driver/drop-table! :starrocks [driver db-id table-name]
+  (uploads/drop-table! driver db-id table-name))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                          Connection Details                                                     |
@@ -147,22 +182,36 @@
   [_ field-type]
   (starrocks-type->base-type field-type))
 
+(defn- boolean-column? [^ResultSetMetaData rsmeta i]
+  ;; MariaDB JDBC versions disagree on numeric precision, but preserve the wire display width.
+  (and (= Types/TINYINT (.getColumnType rsmeta i))
+       (= 1 (.getColumnDisplaySize rsmeta i))))
+
 (defmethod sql-jdbc.execute/column-metadata :starrocks
   [driver ^ResultSetMetaData rsmeta]
   ;; StarRocks BOOLEAN is stored as TINYINT(1) and reported as plain TINYINT over the MySQL
   ;; wire protocol, while table sync reads it as `boolean` from DESCRIBE. Left alone, result
   ;; columns come back as :type/Integer where the synced table says :type/Boolean, which
   ;; breaks anything comparing the two - most visibly data sandboxing, whose column type
-  ;; check rejects every query against a sandboxed table. Real TINYINT columns report
-  ;; precision 4 and are left untouched.
+  ;; check rejects every query against a sandboxed table. Real TINYINT columns have a wider
+  ;; display width and are left untouched.
   (let [cols ((get-method sql-jdbc.execute/column-metadata :sql-jdbc) driver rsmeta)]
     (into []
           (map-indexed (fn [i col]
-                         (if (and (= "TINYINT" (:database_type col))
-                                  (= 1 (.getPrecision rsmeta (inc i))))
+                         (if (boolean-column? rsmeta (inc i))
                            (assoc col :base_type :type/Boolean, :database_type "BOOLEAN")
                            col)))
           cols)))
+
+(defmethod sql-jdbc.execute/read-column-thunk [:starrocks Types/TINYINT]
+  [driver ^ResultSet rs rsmeta i]
+  (if (boolean-column? rsmeta i)
+    (fn []
+      (let [value (.getBoolean rs (int i))]
+        (when-not (.wasNull rs)
+          value)))
+    ((get-method sql-jdbc.execute/read-column-thunk [:sql-jdbc Types/TINYINT])
+     driver rs rsmeta i)))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                          Metadata / Sync                                                        |
@@ -510,7 +559,19 @@
    {:mm     'metabase.driver.sql.query-processor/transform-literal-like-pattern-honeysql
     :impl   (fn transform-literal-like-pattern-honeysql-starrocks [_driver like-rhs-honeysql]
               like-rhs-honeysql)
-    :prefer :sql}])
+    :prefer :sql}
+
+   ;; 0.54+ lets drivers disable promotion. Older uploads hardcodes int -> float, so the
+   ;; legacy ALTER hook must reject it before any schema change or replacement truncation.
+   {:mm    'metabase.driver/allowed-promotions
+    :impl  (constantly {})}
+   {:mm    'metabase.driver/alter-table-columns!
+    :impl  uploads/reject-schema-change!
+    :group :upload-schema-change}
+   {:mm     'metabase.driver/alter-columns!
+    :impl   uploads/reject-schema-change!
+    :unless 'metabase.driver/alter-table-columns!
+    :group  :upload-schema-change}])
 
 ;; Performs the registration as a side effect of loading this namespace. `register-all!` logs
 ;; what it did (and warns if a capability ended up with no implementation at all), so the return
