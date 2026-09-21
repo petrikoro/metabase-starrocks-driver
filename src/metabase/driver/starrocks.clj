@@ -285,6 +285,16 @@
   [_driver native-form]
   native-form)
 
+;; StarRocks uses a two-argument aggregate, not MEDIAN or WITHIN GROUP syntax.
+;; https://docs.starrocks.io/docs/sql-reference/sql-functions/aggregate-functions/percentile_cont/
+(defmethod sql.qp/->honeysql [:starrocks :median]
+  [driver [_ expr]]
+  [:percentile_cont (sql.qp/->honeysql driver expr) [:inline 0.5]])
+
+(defmethod sql.qp/->honeysql [:starrocks :percentile]
+  [driver [_ expr percentile]]
+  [:percentile_cont (sql.qp/->honeysql driver expr) (sql.qp/->honeysql driver percentile)])
+
 ;; Date/time handling
 (defmethod sql.qp/unix-timestamp->honeysql [:starrocks :seconds]
   [_ _ expr]

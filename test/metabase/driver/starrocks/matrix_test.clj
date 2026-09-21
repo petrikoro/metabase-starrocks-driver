@@ -45,6 +45,16 @@
        (prn
         {:present    (into #{} (filter probe#) '~tracked)
          :registered (into #{} (filter registered#) '~tracked)
+         :aggregations
+         (mapv (fn [expr#]
+                 (call# 'metabase.driver.sql.query-processor/->honeysql [:starrocks expr#]))
+               [[:median [:field "amount" {:base-type :type/Float}]]
+                [:median [:+ [:field "amount" {:base-type :type/Float}] 10]]
+                [:percentile [:field "amount" {:base-type :type/Float}] 0]
+                [:percentile [:field "amount" {:base-type :type/Float}] 0.5]
+                [:percentile [:field "amount" {:base-type :type/Float}] 1]
+                [:percentile [:+ [:field "amount" {:base-type :type/Float}] 10]
+                 [:value 0.9 {:base_type :type/Float}]]])
          :calls
          ;; Exercises the real call shapes. Nothing else in the suite reaches these: FK sync is
          ;; gated off by `:metadata/key-constraints false`, so a wrong arity would ship silently.
@@ -206,3 +216,15 @@
                     :base_type     :type/Integer}]}
              (get-in (probe! shape) [:calls :column-metadata]))
           "precision-1 TINYINT should be Boolean without changing real TINYINT columns"))))
+
+(deftest median-and-percentile-use-starrocks-syntax
+  (doseq [[shape {:keys [desc]}] (sort shapes)]
+    (testing (str shape " (" desc ")")
+      (is (= [{:ok [:percentile_cont :amount [:inline 0.5]]}
+              {:ok [:percentile_cont [:+ :amount [:inline 10]] [:inline 0.5]]}
+              {:ok [:percentile_cont :amount [:inline 0]]}
+              {:ok [:percentile_cont :amount [:inline 0.5]]}
+              {:ok [:percentile_cont :amount [:inline 1]]}
+              {:ok [:percentile_cont [:+ :amount [:inline 10]] [:inline 0.9]]}]
+             (:aggregations (probe! shape)))
+          "both aggregates must compile their operands and use two-argument PERCENTILE_CONT"))))

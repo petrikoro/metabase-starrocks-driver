@@ -3,6 +3,23 @@
 ;;;
 ;;; Everything here exists in every Metabase version the driver targets.
 
+(defmulti ->honeysql
+  (fn [driver expr]
+    [driver (if (sequential? expr) (first expr) (class expr))]))
+
+;; Only the operand shapes used by aggregation probes. Deliberately no fallback for
+;; aggregates: the real driver must supply those methods. Numbers are inlined just as
+;; in Metabase, so percentile constants cannot accidentally become bind parameters.
+(defmethod ->honeysql :default
+  [driver expr]
+  (if (number? expr)
+    [:inline expr]
+    (case (first expr)
+      :field (keyword (second expr))
+      :value (->honeysql driver (second expr))
+      :+     (into [:+] (map (partial ->honeysql driver)) (rest expr))
+      (throw (ex-info "Unsupported stub expression" {:driver driver :expr expr})))))
+
 (defmulti quote-style
   (fn [driver] driver))
 
