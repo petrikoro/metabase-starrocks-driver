@@ -3,7 +3,7 @@
 ;;; namespace loads it.
 ;;;
 ;;; Everything here exists in EVERY Metabase version the driver targets. Vars that come and go
-;;; live in the per-shape files instead -- that is the whole point of the split, so the four
+;;; live in the per-shape files instead -- that is the whole point of the split, so the
 ;;; shapes cannot accidentally drift on anything except what they exist to vary.
 
 (defn register!
@@ -40,3 +40,13 @@
 
 (defmulti humanize-connection-error-message
   (fn [driver _message] driver))
+
+;; Stable uploads surface, present since 0.50.0 (truncate!) or earlier.
+(def ^:dynamic *insert-chunk-rows* nil)
+(defmulti upload-type->database-type (fn [driver _type] driver))
+(defmulti table-name-length-limit identity)
+(defmulti create-table! (fn [driver & _] driver))
+(defmulti insert-into! (fn [driver & _] driver))
+(defmulti truncate! (fn [driver & _] driver))
+(defmulti drop-table! (fn [driver & _] driver))
+(defmulti alter-columns! (fn [driver & _] driver))

@@ -1,6 +1,7 @@
 (ns metabase.driver)
 
 (load "/stubs/driver_common")
+(load "/stubs/uploads_v54")
 
 ;;; Shape: Metabase 0.57 - 0.58
 ;;;   describe-table-fks  present (removed in 0.63)

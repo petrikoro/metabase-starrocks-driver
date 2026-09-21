@@ -16,6 +16,7 @@
    [metabase.driver.sql-jdbc.sync :as sql-jdbc.sync]
    [metabase.driver.sql.query-processor :as sql.qp]
    [metabase.driver.starrocks.compat :as compat]
+   [metabase.driver.starrocks.uploads :as uploads]
    [metabase.util.log :as log])
   (:import
    (java.sql Connection ResultSet ResultSetMetaData Types)))
@@ -47,6 +48,35 @@
                               :date-arithmetics                true
                               :advanced-math-expressions       true}]
   (defmethod driver/database-supports? [:starrocks feature] [_ _ _] supported?))
+
+(defmethod driver/database-supports? [:starrocks :uploads]
+  [_ _ database]
+  (uploads/supported? database))
+
+;;; +----------------------------------------------------------------------------------------------------------------+
+;;; |                                          CSV uploads                                                            |
+;;; +----------------------------------------------------------------------------------------------------------------+
+
+;; Keep Metabase's default :upload-with-auto-pk true and create-auto-pk-with-append-csv? false;
+;; existing tables never need an AUTO_INCREMENT ALTER.
+(defmethod driver/upload-type->database-type :starrocks [_ upload-type]
+  (uploads/database-type upload-type))
+
+(defmethod driver/table-name-length-limit :starrocks [_]
+  uploads/identifier-limit)
+
+(defmethod driver/create-table! :starrocks
+  [driver db-id table-name column-definitions & {:keys [primary-key]}]
+  (uploads/create-table! driver db-id table-name column-definitions primary-key))
+
+(defmethod driver/insert-into! :starrocks [driver db-id table-name column-names values]
+  (uploads/insert-into! driver db-id table-name column-names values driver/*insert-chunk-rows*))
+
+(defmethod driver/truncate! :starrocks [driver db-id table-name]
+  (uploads/truncate! driver db-id table-name))
+
+(defmethod driver/drop-table! :starrocks [driver db-id table-name]
+  (uploads/drop-table! driver db-id table-name))
 
 ;;; +----------------------------------------------------------------------------------------------------------------+
 ;;; |                                          Connection Details                                                     |
@@ -524,7 +554,19 @@
    {:mm     'metabase.driver.sql.query-processor/transform-literal-like-pattern-honeysql
     :impl   (fn transform-literal-like-pattern-honeysql-starrocks [_driver like-rhs-honeysql]
               like-rhs-honeysql)
-    :prefer :sql}])
+    :prefer :sql}
+
+   ;; 0.54+ lets drivers disable promotion. Older uploads hardcodes int -> float, so the
+   ;; legacy ALTER hook must reject it before any schema change or replacement truncation.
+   {:mm    'metabase.driver/allowed-promotions
+    :impl  (constantly {})}
+   {:mm    'metabase.driver/alter-table-columns!
+    :impl  uploads/reject-schema-change!
+    :group :upload-schema-change}
+   {:mm     'metabase.driver/alter-columns!
+    :impl   uploads/reject-schema-change!
+    :unless 'metabase.driver/alter-table-columns!
+    :group  :upload-schema-change}])
 
 ;; Performs the registration as a side effect of loading this namespace. `register-all!` logs
 ;; what it did (and warns if a capability ended up with no implementation at all), so the return

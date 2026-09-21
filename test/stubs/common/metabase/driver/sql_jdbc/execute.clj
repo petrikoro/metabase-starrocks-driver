@@ -34,3 +34,9 @@
    with no behavioural coverage at all."
   [_driver _database _options f]
   (f (fake-jdbc/connection *sql-results*)))
+
+(defn set-parameters!
+  "Stable host helper. Record actual bound objects on the fake PreparedStatement."
+  [_driver ^java.sql.PreparedStatement stmt params]
+  (doseq [[i value] (map-indexed vector params)]
+    (.setObject stmt (int (inc i)) value)))

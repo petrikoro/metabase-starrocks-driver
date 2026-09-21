@@ -21,6 +21,9 @@
     metabase.driver/describe-fks
     metabase.driver/describe-database*
     metabase.driver/describe-database
+    metabase.driver/allowed-promotions
+    metabase.driver/alter-columns!
+    metabase.driver/alter-table-columns!
     metabase.driver.sql.query-processor/transform-literal-like-pattern-honeysql])
 
 (def ^:private marker "#RESULT#")
@@ -58,7 +61,32 @@
          :calls
          ;; Exercises the real call shapes. Nothing else in the suite reaches these: FK sync is
          ;; gated off by `:metadata/key-constraints false`, so a wrong arity would ship silently.
-         {:describe-fks-trailing-map
+         {:upload-types
+          (mapv (fn [type#]
+                  (call# 'metabase.driver/upload-type->database-type [:starrocks type#]))
+                [:metabase.upload/varchar-255 :metabase.upload/text :metabase.upload/int
+                 :metabase.upload/float :metabase.upload/boolean :metabase.upload/date
+                 :metabase.upload/datetime :metabase.upload/auto-incrementing-int-pk])
+
+          :uploads-supported
+          (mapv (fn [catalog#]
+                  (call# 'metabase.driver/database-supports?
+                         [:starrocks :uploads {:details {:catalog catalog#}}]))
+                [nil "" "default_catalog" " default_catalog " "hive"])
+
+          :column-limit
+          (call# 'metabase.driver/column-name-length-limit [:starrocks])
+
+          :allowed-promotions
+          (call# 'metabase.driver/allowed-promotions [:starrocks])
+
+          :alter-columns
+          (let [mm# (if (probe# 'metabase.driver/alter-table-columns!)
+                      'metabase.driver/alter-table-columns!
+                      'metabase.driver/alter-columns!)]
+            (call# mm# [:starrocks 1 "s.t" {:n [:double]}]))
+
+          :describe-fks-trailing-map
           (call# 'metabase.driver/describe-fks
                  [:starrocks db# {:schema-names ["s"] :table-names ["t"]}])
 
@@ -138,22 +166,35 @@
 
 (def ^:private shapes
   "Expected registrations per Metabase shape. `describe-fks` is present in all of them (0.49+)."
-  {"v50" {:desc       "Metabase 0.50 - 0.56"
+  {"v50" {:desc       "Metabase 0.50.0 - 0.50.7"
           :registered '#{metabase.driver/describe-table-fks
                          metabase.driver/describe-fks
-                         metabase.driver/describe-database}}
+                         metabase.driver/describe-database
+                         metabase.driver/alter-columns!}}
+   "v54" {:desc       "Metabase 0.54 - 0.56"
+          :registered '#{metabase.driver/describe-table-fks
+                         metabase.driver/describe-fks
+                         metabase.driver/describe-database
+                         metabase.driver/allowed-promotions
+                         metabase.driver/alter-table-columns!}}
    "v57" {:desc       "Metabase 0.57 - 0.58"
           :registered '#{metabase.driver/describe-table-fks
                          metabase.driver/describe-fks
-                         metabase.driver/describe-database*}}
+                         metabase.driver/describe-database*
+                         metabase.driver/allowed-promotions
+                         metabase.driver/alter-table-columns!}}
    "v59" {:desc       "Metabase 0.59 - 0.62"
           :registered '#{metabase.driver/describe-table-fks
                          metabase.driver/describe-fks
                          metabase.driver/describe-database*
+                         metabase.driver/allowed-promotions
+                         metabase.driver/alter-table-columns!
                          metabase.driver.sql.query-processor/transform-literal-like-pattern-honeysql}}
    "v63" {:desc       "Metabase 0.63+"
           :registered '#{metabase.driver/describe-fks
                          metabase.driver/describe-database*
+                         metabase.driver/allowed-promotions
+                         metabase.driver/alter-table-columns!
                          metabase.driver.sql.query-processor/transform-literal-like-pattern-honeysql}}})
 
 (defn- probe!
@@ -174,6 +215,20 @@
   (doseq [[shape {:keys [desc]}] (sort shapes)]
     (testing (str shape " (" desc ")")
       (probe! shape))))
+
+(deftest uploads-contract-across-versions
+  (doseq [shape (keys shapes)]
+    (testing shape
+      (let [calls (:calls (probe! shape))]
+        (is (= (mapv #(hash-map :ok %)
+                     [[:string] [:string] [:bigint] [:double]
+                      [:boolean] [:date] [:datetime] [:bigint :not-null :auto-increment]])
+               (:upload-types calls)))
+        (is (= (mapv #(hash-map :ok %) [true true true true false])
+               (:uploads-supported calls)))
+        (is (= (if (= shape "v50") :absent {:ok 255}) (:column-limit calls)))
+        (is (= (if (= shape "v50") :absent {:ok {}}) (:allowed-promotions calls)))
+        (is (str/includes? (get-in calls [:alter-columns :err] "") "Changing CSV column types"))))))
 
 (deftest registers-exactly-the-right-methods-per-shape
   (doseq [[shape {:keys [desc registered]}] (sort shapes)]
