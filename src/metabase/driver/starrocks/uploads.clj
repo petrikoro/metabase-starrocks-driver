@@ -105,11 +105,6 @@
     (when (.next rs)
       (.getString rs 1))))
 
-(defn- execute! [^Connection conn ^String sql]
-  (with-open [stmt (.createStatement conn)]
-    (.execute stmt sql))
-  nil)
-
 (defn- with-upload-connection [driver db-id f]
   ;; Do not rebuild connection details: on newer hosts the caller has already established
   ;; with-write-connection, which the standard pool lookup below must inherit.
@@ -121,19 +116,23 @@
      (.setAutoCommit conn true)
      (f conn))))
 
+(defn- execute! [driver db-id ^String sql]
+  (with-upload-connection driver db-id
+    (fn [^Connection conn]
+      (with-open [stmt (.createStatement conn)]
+        (.execute stmt sql))))
+  nil)
+
 (defn create-table!
   "Create a new upload table. A failed CREATE must never cause an existing table to be dropped."
   [driver db-id table-name column-definitions primary-key]
-  (let [sql (create-table-sql table-name column-definitions primary-key)]
-    (with-upload-connection driver db-id #(execute! % sql))))
+  (execute! driver db-id (create-table-sql table-name column-definitions primary-key)))
 
 (defn drop-table! [driver db-id table-name]
-  (let [sql (str "DROP TABLE IF EXISTS " (quote-table table-name))]
-    (with-upload-connection driver db-id #(execute! % sql))))
+  (execute! driver db-id (str "DROP TABLE IF EXISTS " (quote-table table-name))))
 
 (defn truncate! [driver db-id table-name]
-  (let [sql (str "TRUNCATE TABLE " (quote-table table-name))]
-    (with-upload-connection driver db-id #(execute! % sql))))
+  (execute! driver db-id (str "TRUNCATE TABLE " (quote-table table-name))))
 
 (defn reject-schema-change!
   "Older hosts attempt int -> float promotion without consulting allowed-promotions."
@@ -204,13 +203,11 @@
         driver db-id
         (fn [^Connection conn]
           (doseq [chunk (partition-all size values)]
-            (let [rows (mapv (fn [row]
-                              (let [row (mapv upload-value row)]
-                                (when-not (= n (count row))
-                                  (fail! "CSV row width does not match the upload columns."))
-                                row)) chunk)
-                  sql  (str prefix (str/join ", " (repeat (count rows) row-sql)))]
+            (when-not (every? #(= n (count %)) chunk)
+              (fail! "CSV row width does not match the upload columns."))
+            (let [params (into [] (comp cat (map upload-value)) chunk)
+                  sql    (str prefix (str/join ", " (repeat (count chunk) row-sql)))]
               (with-open [stmt (.prepareStatement conn sql)]
-                (sql-jdbc.execute/set-parameters! driver stmt (into [] cat rows))
-                (when-not (= (count rows) (.executeUpdate stmt))
+                (sql-jdbc.execute/set-parameters! driver stmt params)
+                (when-not (= (count chunk) (.executeUpdate stmt))
                   (fail! "Inserted row count differs from the CSV chunk size. Data may already be committed; do not retry automatically."))))))))))
