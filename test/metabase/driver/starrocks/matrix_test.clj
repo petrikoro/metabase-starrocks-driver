@@ -80,6 +80,12 @@
           :allowed-promotions
           (call# 'metabase.driver/allowed-promotions [:starrocks])
 
+          :add-columns
+          (mapv (fn [opts#]
+                  (call# 'metabase.driver/add-columns!
+                         (into [:starrocks 1 "s.t" {:extra [:string]}] opts#)))
+                [[] [:primary-key [:_mb_row_id]]])
+
           :alter-columns
           (let [mm# (if (probe# 'metabase.driver/alter-table-columns!)
                       'metabase.driver/alter-table-columns!
@@ -228,7 +234,9 @@
                (:uploads-supported calls)))
         (is (= (if (= shape "v50") :absent {:ok 255}) (:column-limit calls)))
         (is (= (if (= shape "v50") :absent {:ok {}}) (:allowed-promotions calls)))
-        (is (str/includes? (get-in calls [:alter-columns :err] "") "Changing CSV column types"))))))
+        (doseq [result (:add-columns calls)]
+          (is (str/includes? (:err result "") "Adding CSV columns")))
+        (is (str/includes? (get-in calls [:alter-columns :err] "") "Adding CSV columns"))))))
 
 (deftest registers-exactly-the-right-methods-per-shape
   (doseq [[shape {:keys [desc registered]}] (sort shapes)]

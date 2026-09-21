@@ -135,9 +135,9 @@
   (execute! driver db-id (str "TRUNCATE TABLE " (quote-table table-name))))
 
 (defn reject-schema-change!
-  "Older hosts attempt int -> float promotion without consulting allowed-promotions."
+  "Reject new columns and legacy type promotions before any asynchronous ALTER."
   [& _]
-  (fail! "Changing CSV column types is not supported. Create a new upload table instead."))
+  (fail! "Adding CSV columns or changing their types is not supported. Create a new upload table instead."))
 
 (defn- check-date! [^LocalDate date]
   (when-not (<= 0 (.getYear date) 9999)

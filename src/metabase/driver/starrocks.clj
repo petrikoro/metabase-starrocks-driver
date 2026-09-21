@@ -69,6 +69,11 @@
   [driver db-id table-name column-definitions & {:keys [primary-key]}]
   (uploads/create-table! driver db-id table-name column-definitions primary-key))
 
+;; New columns bypass allowed-promotions and can start an asynchronous ALTER.
+(defmethod driver/add-columns! :starrocks
+  [_driver _db-id _table-name _column-definitions & _]
+  (uploads/reject-schema-change!))
+
 (defmethod driver/insert-into! :starrocks [driver db-id table-name column-names values]
   (uploads/insert-into! driver db-id table-name column-names values driver/*insert-chunk-rows*))
 

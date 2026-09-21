@@ -175,7 +175,7 @@
 (deftest invalid-insert-shapes-and-offset-type-fail-early
   (is (thrown-with-msg? clojure.lang.ExceptionInfo #"timezone offset"
                         (uploads/database-type :metabase.upload/offset-datetime)))
-  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Changing CSV column types"
+  (is (thrown-with-msg? clojure.lang.ExceptionInfo #"Adding CSV columns"
                         (uploads/reject-schema-change! :starrocks 1 "s.t" {:n [:double]})))
   (doseq [columns [[:_mb_row_id] [:_MB_ROW_ID] [:n :N] []]]
     (let [result (recording-write {} #(uploads/insert-into! :starrocks 1 "s.t" columns [[1]] nil))]

@@ -46,6 +46,7 @@
 (defmulti upload-type->database-type (fn [driver _type] driver))
 (defmulti table-name-length-limit identity)
 (defmulti create-table! (fn [driver & _] driver))
+(defmulti add-columns! (fn [driver & _] driver))
 (defmulti insert-into! (fn [driver & _] driver))
 (defmulti truncate! (fn [driver & _] driver))
 (defmulti drop-table! (fn [driver & _] driver))
