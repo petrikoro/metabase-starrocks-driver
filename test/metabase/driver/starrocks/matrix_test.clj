@@ -141,6 +141,18 @@
          ;; `with-bindings` (map of var->value, resolved at runtime) rather than `binding`,
          ;; which needs a literal symbol -- and a literal reference to a stub var would be
          ;; resolved when this form is compiled, before the `require` above has run.
+         :syncable-schemas
+         (mapv
+          (fn [schemas#]
+            (with-bindings
+              {(resolve 'metabase.driver.sql-jdbc.execute/*sql-results*)
+               {"SHOW DATABASES" [["Database"] (mapv #(hash-map "Database" %) schemas#)]}}
+              ;; No SHOW TABLES results: empty databases must also be selectable for uploads.
+              (call# 'metabase.driver/syncable-schemas [:starrocks db#])))
+          [["silver" "empty_uploads" "information_schema" "INFORMATION_SCHEMA" "_statistics_"]
+           ["information_schema" "_statistics_"]
+           []])
+
          :describe-database
          (with-bindings
            {(resolve 'metabase.driver.sql-jdbc.execute/*sql-results*)
@@ -284,6 +296,13 @@
                                {:name "customers" :schema "silver"}}}}
                (:describe-database (probe! shape)))
             "information_schema must be filtered out and tables returned as a set")))))
+
+(deftest upload-settings-can-discover-schemas
+  (doseq [[shape {:keys [desc]}] (sort shapes)]
+    (testing (str shape " (" desc ")")
+      (is (= [{:ok #{"silver" "empty_uploads"}} {:ok #{}} {:ok #{}}]
+             (:syncable-schemas (probe! shape)))
+          "upload settings must discover visible databases, including empty ones, without JDBC getSchemas"))))
 
 (deftest result-column-type-correction-survives-every-shape
   (doseq [[shape {:keys [desc]}] (sort shapes)]

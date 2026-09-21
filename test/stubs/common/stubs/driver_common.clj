@@ -19,6 +19,12 @@
 (defmulti describe-table
   (fn [driver _database _table] driver))
 
+;; Added 0.47; used by the upload settings schema selector, separately from table sync.
+(defmulti syncable-schemas
+  (fn [driver _database] driver))
+
+(defmethod syncable-schemas :default [_ _] #{})
+
 ;; Added 0.49, still present in 0.63+.
 (defmulti describe-fks
   (fn [driver & _] driver))

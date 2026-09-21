@@ -257,6 +257,16 @@
                      (conj schemas schema-name))))
           schemas)))))
 
+(defmethod driver/syncable-schemas :starrocks
+  [driver database]
+  ;; Upload settings uses this independently of describe-database. MariaDB JDBC's
+  ;; getSchemas returns no rows; use the same catalog-aware discovery as table sync,
+  ;; including databases that do not have tables yet.
+  (sql-jdbc.execute/do-with-connection-with-options
+   driver database nil
+   (fn [^Connection conn]
+     (set (get-schemas driver conn)))))
+
 (defn- get-tables-in-schema
   "Gets all tables in the given schema/database."
   [driver ^Connection conn schema]
